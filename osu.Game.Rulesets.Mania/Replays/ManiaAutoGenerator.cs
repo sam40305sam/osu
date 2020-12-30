@@ -6,7 +6,6 @@ using System.Linq;
 using osu.Game.Replays;
 using osu.Game.Rulesets.Mania.Beatmaps;
 using osu.Game.Rulesets.Objects;
-using osu.Game.Rulesets.Objects.Types;
 using osu.Game.Rulesets.Replays;
 
 namespace osu.Game.Rulesets.Mania.Replays
@@ -47,6 +46,9 @@ namespace osu.Game.Rulesets.Mania.Replays
 
         public override Replay Generate()
         {
+            if (Beatmap.HitObjects.Count == 0)
+                return Replay;
+
             var pointGroups = generateActionPoints().GroupBy(a => a.Time).OrderBy(g => g.First().Time);
 
             var actions = new List<ManiaAction>();
@@ -84,7 +86,7 @@ namespace osu.Game.Rulesets.Mania.Replays
                 var currentObject = Beatmap.HitObjects[i];
                 var nextObjectInColumn = GetNextObject(i); // Get the next object that requires pressing the same button
 
-                double endTime = (currentObject as IHasEndTime)?.EndTime ?? currentObject.StartTime;
+                double endTime = currentObject.GetEndTime();
 
                 bool canDelayKeyUp = nextObjectInColumn == null ||
                                      nextObjectInColumn.StartTime > endTime + RELEASE_DELAY;

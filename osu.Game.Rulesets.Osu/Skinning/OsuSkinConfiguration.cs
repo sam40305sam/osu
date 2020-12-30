@@ -11,5 +11,10 @@ namespace osu.Game.Rulesets.Osu.Skinning
         SliderPathRadius,
         AllowSliderBallTint,
         CursorExpand,
+        CursorRotate,
+        HitCircleOverlayAboveNumber,
+        HitCircleOverlayAboveNumer, // Some old skins will have this typo
+        SpinnerFrequencyModulate,
+        SpinnerNoBlink
     }
 }

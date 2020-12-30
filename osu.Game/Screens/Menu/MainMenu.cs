@@ -1,26 +1,24 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-using System;
+using System.Linq;
 using osuTK;
 using osuTK.Graphics;
 using osu.Framework.Allocation;
 using osu.Framework.Bindables;
 using osu.Framework.Graphics;
-using osu.Framework.Graphics.Sprites;
 using osu.Framework.Platform;
 using osu.Framework.Screens;
-using osu.Game.Beatmaps;
 using osu.Game.Configuration;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Containers;
+using osu.Game.IO;
 using osu.Game.Online.API;
 using osu.Game.Overlays;
-using osu.Game.Overlays.Dialog;
 using osu.Game.Screens.Backgrounds;
-using osu.Game.Screens.Charts;
 using osu.Game.Screens.Edit;
-using osu.Game.Screens.Multi;
+using osu.Game.Screens.OnlinePlay.Multiplayer;
+using osu.Game.Screens.OnlinePlay.Playlists;
 using osu.Game.Screens.Select;
 
 namespace osu.Game.Screens.Menu
@@ -37,6 +35,8 @@ namespace osu.Game.Screens.Menu
 
         public override bool AllowExternalScreenChange => true;
 
+        public override bool AllowRateAdjustments => false;
+
         private Screen songSelect;
 
         private MenuSideFlashes sideFlashes;
@@ -46,8 +46,8 @@ namespace osu.Game.Screens.Menu
         [Resolved]
         private GameHost host { get; set; }
 
-        [Resolved(canBeNull: true)]
-        private MusicController music { get; set; }
+        [Resolved]
+        private MusicController musicController { get; set; }
 
         [Resolved(canBeNull: true)]
         private LoginOverlay login { get; set; }
@@ -62,14 +62,19 @@ namespace osu.Game.Screens.Menu
 
         protected override BackgroundScreen CreateBackground() => background;
 
-        private Bindable<int> holdDelay;
+        private Bindable<float> holdDelay;
+        private Bindable<bool> loginDisplayed;
 
         private ExitConfirmOverlay exitConfirmOverlay;
 
+        private ParallaxContainer buttonsContainer;
+        private SongTicker songTicker;
+
         [BackgroundDependencyLoader(true)]
-        private void load(DirectOverlay direct, SettingsOverlay settings, OsuConfigManager config)
+        private void load(BeatmapListingOverlay beatmapListing, SettingsOverlay settings, RankingsOverlay rankings, OsuConfigManager config, SessionStatics statics)
         {
-            holdDelay = config.GetBindable<int>(OsuSetting.UIHoldActivationDelay);
+            holdDelay = config.GetBindable<float>(OsuSetting.UIHoldActivationDelay);
+            loginDisplayed = statics.GetBindable<bool>(Static.LoginOverlayDisplayed);
 
             if (host.CanExit)
             {
@@ -85,24 +90,35 @@ namespace osu.Game.Screens.Menu
                 });
             }
 
-            AddRangeInternal(new Drawable[]
+            AddRangeInternal(new[]
             {
-                new ParallaxContainer
+                buttonsContainer = new ParallaxContainer
                 {
                     ParallaxAmount = 0.01f,
                     Children = new Drawable[]
                     {
                         buttons = new ButtonSystem
                         {
-                            OnChart = delegate { this.Push(new ChartListing()); },
-                            OnEdit = delegate { this.Push(new Editor()); },
+                            OnEdit = delegate
+                            {
+                                Beatmap.SetDefault();
+                                this.Push(new Editor());
+                            },
                             OnSolo = onSolo,
-                            OnMulti = delegate { this.Push(new Multiplayer()); },
+                            OnMultiplayer = () => this.Push(new Multiplayer()),
+                            OnPlaylists = () => this.Push(new Playlists()),
                             OnExit = confirmAndExit,
                         }
                     }
                 },
                 sideFlashes = new MenuSideFlashes(),
+                songTicker = new SongTicker
+                {
+                    Anchor = Anchor.TopRight,
+                    Origin = Anchor.TopRight,
+                    Margin = new MarginPadding { Right = 15, Top = 5 }
+                },
+                exitConfirmOverlay?.CreateProxy() ?? Drawable.Empty()
             });
 
             buttons.StateChanged += state =>
@@ -121,16 +137,21 @@ namespace osu.Game.Screens.Menu
             };
 
             buttons.OnSettings = () => settings?.ToggleVisibility();
-            buttons.OnDirect = () => direct?.ToggleVisibility();
+            buttons.OnBeatmapListing = () => beatmapListing?.ToggleVisibility();
 
             LoadComponentAsync(background = new BackgroundScreenDefault());
             preloadSongSelect();
         }
 
+        [Resolved(canBeNull: true)]
+        private OsuGame game { get; set; }
+
         private void confirmAndExit()
         {
+            if (exitConfirmed) return;
+
             exitConfirmed = true;
-            this.Exit();
+            game?.PerformFromScreen(menu => menu.Exit());
         }
 
         private void preloadSongSelect()
@@ -150,27 +171,29 @@ namespace osu.Game.Screens.Menu
             return s;
         }
 
+        [Resolved]
+        private Storage storage { get; set; }
+
         public override void OnEntering(IScreen last)
         {
             base.OnEntering(last);
             buttons.FadeInFromZero(500);
 
-            var track = Beatmap.Value.Track;
             var metadata = Beatmap.Value.Metadata;
 
-            if (last is IntroScreen && track != null)
+            if (last is IntroScreen && musicController.TrackLoaded)
             {
-                if (!track.IsRunning)
+                if (!musicController.CurrentTrack.IsRunning)
                 {
-                    track.Seek(metadata.PreviewTime != -1 ? metadata.PreviewTime : 0.4f * track.Length);
-                    track.Start();
+                    musicController.CurrentTrack.Seek(metadata.PreviewTime != -1 ? metadata.PreviewTime : 0.4f * musicController.CurrentTrack.Length);
+                    musicController.CurrentTrack.Start();
                 }
             }
 
-            Beatmap.ValueChanged += beatmap_ValueChanged;
+            if (storage is OsuStorage osuStorage && osuStorage.Error != OsuStorageError.None)
+                dialogOverlay?.Push(new StorageErrorDialog(osuStorage, osuStorage.Error));
         }
 
-        private bool loginDisplayed;
         private bool exitConfirmed;
 
         protected override void LogoArriving(OsuLogo logo, bool resuming)
@@ -187,7 +210,7 @@ namespace osu.Game.Screens.Menu
                 buttons.State = ButtonSystemState.TopLevel;
 
                 this.FadeIn(FADE_IN_DURATION, Easing.OutQuint);
-                this.MoveTo(new Vector2(0, 0), FADE_IN_DURATION, Easing.OutQuint);
+                buttonsContainer.MoveTo(new Vector2(0, 0), FADE_IN_DURATION, Easing.OutQuint);
 
                 sideFlashes.Delay(FADE_IN_DURATION).FadeIn(64, Easing.InQuint);
             }
@@ -198,10 +221,10 @@ namespace osu.Game.Screens.Menu
 
             bool displayLogin()
             {
-                if (!loginDisplayed)
+                if (!loginDisplayed.Value)
                 {
                     Scheduler.AddDelayed(() => login?.Show(), 500);
-                    loginDisplayed = true;
+                    loginDisplayed.Value = true;
                 }
 
                 return true;
@@ -217,14 +240,6 @@ namespace osu.Game.Screens.Menu
             seq.OnAbort(_ => buttons.SetOsuLogo(null));
         }
 
-        private void beatmap_ValueChanged(ValueChangedEvent<WorkingBeatmap> e)
-        {
-            if (!this.IsCurrentScreen())
-                return;
-
-            ((BackgroundScreenDefault)Background).Next();
-        }
-
         public override void OnSuspending(IScreen next)
         {
             base.OnSuspending(next);
@@ -232,7 +247,7 @@ namespace osu.Game.Screens.Menu
             buttons.State = ButtonSystemState.EnteringMode;
 
             this.FadeOut(FADE_OUT_DURATION, Easing.InSine);
-            this.MoveTo(new Vector2(-800, 0), FADE_OUT_DURATION, Easing.InSine);
+            buttonsContainer.MoveTo(new Vector2(-800, 0), FADE_OUT_DURATION, Easing.InSine);
 
             sideFlashes.FadeOut(64, Easing.OutQuint);
         }
@@ -243,49 +258,35 @@ namespace osu.Game.Screens.Menu
 
             (Background as BackgroundScreenDefault)?.Next();
 
-            //we may have consumed our preloaded instance, so let's make another.
+            // we may have consumed our preloaded instance, so let's make another.
             preloadSongSelect();
 
-            if (Beatmap.Value.Track != null && music?.IsUserPaused != true)
-                Beatmap.Value.Track.Start();
+            musicController.EnsurePlayingSomething();
         }
 
         public override bool OnExiting(IScreen next)
         {
-            if (!exitConfirmed && dialogOverlay != null && !(dialogOverlay.CurrentDialog is ConfirmExitDialog))
+            if (!exitConfirmed && dialogOverlay != null)
             {
-                dialogOverlay.Push(new ConfirmExitDialog(confirmAndExit, () => exitConfirmOverlay.Abort()));
-                return true;
+                if (dialogOverlay.CurrentDialog is ConfirmExitDialog exitDialog)
+                {
+                    exitConfirmed = true;
+                    exitDialog.Buttons.First().Click();
+                }
+                else
+                {
+                    dialogOverlay.Push(new ConfirmExitDialog(confirmAndExit, () => exitConfirmOverlay.Abort()));
+                    return true;
+                }
             }
 
             buttons.State = ButtonSystemState.Exit;
+            OverlayActivationMode.Value = OverlayActivation.Disabled;
+
+            songTicker.Hide();
+
             this.FadeOut(3000);
             return base.OnExiting(next);
-        }
-
-        private class ConfirmExitDialog : PopupDialog
-        {
-            public ConfirmExitDialog(Action confirm, Action cancel)
-            {
-                HeaderText = "Are you sure you want to exit?";
-                BodyText = "Last chance to back out.";
-
-                Icon = FontAwesome.Solid.ExclamationTriangle;
-
-                Buttons = new PopupDialogButton[]
-                {
-                    new PopupDialogOkButton
-                    {
-                        Text = @"Good bye",
-                        Action = confirm
-                    },
-                    new PopupDialogCancelButton
-                    {
-                        Text = @"Just a little more",
-                        Action = cancel
-                    },
-                };
-            }
         }
     }
 }
