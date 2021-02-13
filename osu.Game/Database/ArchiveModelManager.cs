@@ -115,13 +115,13 @@ namespace osu.Game.Database
             return Import(notification, paths.Select(p => new ImportTask(p)).ToArray());
         }
 
-        public Task Import(Stream stream, string filename)
+        public Task Import(params ImportTask[] tasks)
         {
             var notification = new ProgressNotification { State = ProgressNotificationState.Active };
 
             PostNotification?.Invoke(notification);
 
-            return Import(notification, new ImportTask(stream, filename));
+            return Import(notification, tasks);
         }
 
         protected async Task<IEnumerable<TModel>> Import(ProgressNotification notification, params ImportTask[] tasks)
@@ -308,7 +308,7 @@ namespace osu.Game.Database
         /// <param name="item">The model to be imported.</param>
         /// <param name="archive">An optional archive to use for model population.</param>
         /// <param name="cancellationToken">An optional cancellation token.</param>
-        public async Task<TModel> Import(TModel item, ArchiveReader archive = null, CancellationToken cancellationToken = default) => await Task.Factory.StartNew(async () =>
+        public virtual async Task<TModel> Import(TModel item, ArchiveReader archive = null, CancellationToken cancellationToken = default) => await Task.Factory.StartNew(async () =>
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -625,7 +625,7 @@ namespace osu.Game.Database
         /// <summary>
         /// Set a storage with access to an osu-stable install for import purposes.
         /// </summary>
-        public Func<Storage> GetStableStorage { private get; set; }
+        public Func<StableStorage> GetStableStorage { private get; set; }
 
         /// <summary>
         /// Denotes whether an osu-stable installation is present to perform automated imports from.
@@ -638,9 +638,10 @@ namespace osu.Game.Database
         protected virtual string ImportFromStablePath => null;
 
         /// <summary>
-        /// Select paths to import from stable. Default implementation iterates all directories in <see cref="ImportFromStablePath"/>.
+        /// Select paths to import from stable where all paths should be absolute. Default implementation iterates all directories in <see cref="ImportFromStablePath"/>.
         /// </summary>
-        protected virtual IEnumerable<string> GetStableImportPaths(Storage stableStoage) => stableStoage.GetDirectories(ImportFromStablePath);
+        protected virtual IEnumerable<string> GetStableImportPaths(Storage storage) => storage.GetDirectories(ImportFromStablePath)
+                                                                                              .Select(path => storage.GetFullPath(path));
 
         /// <summary>
         /// Whether this specified path should be removed after successful import.
@@ -654,23 +655,32 @@ namespace osu.Game.Database
         /// </summary>
         public Task ImportFromStableAsync()
         {
-            var stable = GetStableStorage?.Invoke();
+            var stableStorage = GetStableStorage?.Invoke();
 
-            if (stable == null)
+            if (stableStorage == null)
             {
                 Logger.Log("No osu!stable installation available!", LoggingTarget.Information, LogLevel.Error);
                 return Task.CompletedTask;
             }
 
-            if (!stable.ExistsDirectory(ImportFromStablePath))
+            var storage = PrepareStableStorage(stableStorage);
+
+            if (!storage.ExistsDirectory(ImportFromStablePath))
             {
                 // This handles situations like when the user does not have a Skins folder
                 Logger.Log($"No {ImportFromStablePath} folder available in osu!stable installation", LoggingTarget.Information, LogLevel.Error);
                 return Task.CompletedTask;
             }
 
-            return Task.Run(async () => await Import(GetStableImportPaths(GetStableStorage()).Select(f => stable.GetFullPath(f)).ToArray()));
+            return Task.Run(async () => await Import(GetStableImportPaths(storage).ToArray()));
         }
+
+        /// <summary>
+        /// Run any required traversal operations on the stable storage location before performing operations.
+        /// </summary>
+        /// <param name="stableStorage">The stable storage.</param>
+        /// <returns>The usable storage. Return the unchanged <paramref name="stableStorage"/> if no traversal is required.</returns>
+        protected virtual Storage PrepareStableStorage(StableStorage stableStorage) => stableStorage;
 
         #endregion
 

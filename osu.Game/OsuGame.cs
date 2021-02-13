@@ -28,7 +28,6 @@ using osu.Framework.Graphics.Sprites;
 using osu.Framework.Input;
 using osu.Framework.Input.Bindings;
 using osu.Framework.Input.Events;
-using osu.Framework.Platform;
 using osu.Framework.Threading;
 using osu.Game.Beatmaps;
 using osu.Game.Collections;
@@ -51,7 +50,8 @@ using osu.Game.Screens.Select;
 using osu.Game.Updater;
 using osu.Game.Utils;
 using LogLevel = osu.Framework.Logging.LogLevel;
-using System.IO;
+using osu.Game.Database;
+using osu.Game.IO;
 
 namespace osu.Game
 {
@@ -88,7 +88,7 @@ namespace osu.Game
 
         protected SentryLogger SentryLogger;
 
-        public virtual Storage GetStorageForStableInstall() => null;
+        public virtual StableStorage GetStorageForStableInstall() => null;
 
         public float ToolbarOffset => (Toolbar?.Position.Y ?? 0) + (Toolbar?.DrawHeight ?? 0);
 
@@ -151,11 +151,11 @@ namespace osu.Game
             updateBlockingOverlayFade();
         }
 
-        public void RemoveBlockingOverlay(OverlayContainer overlay)
+        public void RemoveBlockingOverlay(OverlayContainer overlay) => Schedule(() =>
         {
             visibleBlockingOverlays.Remove(overlay);
             updateBlockingOverlayFade();
-        }
+        });
 
         /// <summary>
         /// Close all game-wide overlays.
@@ -438,10 +438,10 @@ namespace osu.Game
             }, validScreens: new[] { typeof(PlaySongSelect) });
         }
 
-        public override Task Import(Stream stream, string filename)
+        public override Task Import(params ImportTask[] imports)
         {
             // encapsulate task as we don't want to begin the import process until in a ready state.
-            var importTask = new Task(async () => await base.Import(stream, filename));
+            var importTask = new Task(async () => await base.Import(imports));
 
             waitForReady(() => this, _ => importTask.Start());
 
@@ -468,6 +468,16 @@ namespace osu.Game
         private void modsChanged(ValueChangedEvent<IReadOnlyList<Mod>> mods)
         {
             updateModDefaults();
+
+            // a lease may be taken on the mods bindable, at which point we can't really ensure valid mods.
+            if (SelectedMods.Disabled)
+                return;
+
+            if (!ModUtils.CheckValidForGameplay(mods.NewValue, out var invalid))
+            {
+                // ensure we always have a valid set of mods.
+                SelectedMods.Value = mods.NewValue.Except(invalid).ToArray();
+            }
         }
 
         private void updateModDefaults()
@@ -768,7 +778,7 @@ namespace osu.Game
 
                 if (recentLogCount < short_term_display_limit)
                 {
-                    Schedule(() => notifications.Post(new SimpleNotification
+                    Schedule(() => notifications.Post(new SimpleErrorNotification
                     {
                         Icon = entry.Level == LogLevel.Important ? FontAwesome.Solid.ExclamationCircle : FontAwesome.Solid.Bomb,
                         Text = entry.Message.Truncate(256) + (entry.Exception != null && IsDeployedBuild ? "\n\nThis error has been automatically reported to the devs." : string.Empty),
@@ -940,18 +950,6 @@ namespace osu.Game
             }
 
             return base.OnExiting();
-        }
-
-        /// <summary>
-        /// Use to programatically exit the game as if the user was triggering via alt-f4.
-        /// Will keep persisting until an exit occurs (exit may be blocked multiple times).
-        /// </summary>
-        public void GracefullyExit()
-        {
-            if (!OnExiting())
-                Exit();
-            else
-                Scheduler.AddDelayed(GracefullyExit, 2000);
         }
 
         protected override void UpdateAfterChildren()

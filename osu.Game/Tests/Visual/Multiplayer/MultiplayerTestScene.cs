@@ -23,6 +23,9 @@ namespace osu.Game.Tests.Visual.Multiplayer
         [Cached]
         public Bindable<FilterCriteria> Filter { get; }
 
+        [Cached]
+        public OngoingOperationTracker OngoingOperationTracker { get; }
+
         protected override Container<Drawable> Content => content;
         private readonly TestMultiplayerRoomContainer content;
 
@@ -36,6 +39,7 @@ namespace osu.Game.Tests.Visual.Multiplayer
             Client = content.Client;
             RoomManager = content.RoomManager;
             Filter = content.Filter;
+            OngoingOperationTracker = content.OngoingOperationTracker;
         }
 
         [SetUp]
@@ -46,5 +50,13 @@ namespace osu.Game.Tests.Visual.Multiplayer
             if (joinRoom)
                 RoomManager.Schedule(() => RoomManager.CreateRoom(Room));
         });
+
+        public override void SetUpSteps()
+        {
+            base.SetUpSteps();
+
+            if (joinRoom)
+                AddUntilStep("wait for room join", () => Client.Room != null);
+        }
     }
 }
